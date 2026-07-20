@@ -1,0 +1,51 @@
+name: win-trial
+on: { workflow_dispatch: {} }
+jobs:
+  build:
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { repo: blapp,        ref: main }
+          - { repo: synth,        ref: main }
+          - { repo: forge,        ref: main }
+          - { repo: TheMaster,    ref: main }
+          - { repo: vocal-sauce,  ref: worktree-m0-skeleton }
+    steps:
+      - name: Checkout plugin (private, via token)
+        uses: actions/checkout@v4
+        with:
+          repository: only1justjay/${{ matrix.repo }}
+          ref: ${{ matrix.ref }}
+          token: ${{ secrets.NHOF_PAT }}
+          path: plugin
+      - name: Checkout nhof-licensing (private)
+        uses: actions/checkout@v4
+        with:
+          repository: only1justjay/nhof-licensing
+          ref: main
+          token: ${{ secrets.NHOF_PAT }}
+          path: nhof-licensing
+      - name: Clone JUCE 8.0.14
+        shell: bash
+        run: git clone --depth 1 --branch 8.0.14 https://github.com/juce-framework/JUCE.git JUCE
+      - name: Configure (TRIAL - watermarked, no retail unlock)
+        shell: bash
+        run: cmake -S plugin -B plugin/build -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release -DNHOF_TRIAL_BUILD=ON
+      - name: Build
+        shell: bash
+        run: cmake --build plugin/build --config Release --parallel
+      - name: Collect
+        shell: bash
+        run: |
+          mkdir -p out
+          find plugin/build -type d -path "*Release/VST3/*.vst3" | while read v; do cp -R "$v" out/; done
+          find plugin/build -type f -path "*Release/Standalone/*.exe" -exec cp {} out/ \;
+          find out -type f \( -iname "*.ilk" -o -iname "*.exp" -o -iname "*.lib" -o -iname "*.pdb" \) -delete || true
+          ls -R out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.repo }}-win-trial
+          path: out/**
+          retention-days: 1
