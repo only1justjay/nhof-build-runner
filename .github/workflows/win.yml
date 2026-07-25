@@ -99,3 +99,17 @@ jobs:
           name: ${{ matrix.repo }}-win-installer
           path: out/installer_out/**
           retention-days: 3
+      - name: Smoke-test installer on Windows (silent install + verify placement)
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem out/installer_out -Filter *.exe | Select-Object -First 1
+          if (-not $exe) { Write-Error "No installer was produced"; exit 1 }
+          Write-Host "Silently installing $($exe.Name) ..."
+          $p = Start-Process -FilePath $exe.FullName -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait -PassThru
+          Write-Host "Installer exit code: $($p.ExitCode)"
+          if ($p.ExitCode -ne 0) { Write-Error "Installer failed with exit code $($p.ExitCode)"; exit 1 }
+          $vst3dir = Join-Path $env:CommonProgramFiles 'VST3'
+          $vst3 = Get-ChildItem $vst3dir -Directory -Filter *.vst3 -ErrorAction SilentlyContinue
+          if (-not $vst3) { Write-Error "FAIL: no .vst3 found in $vst3dir after install"; exit 1 }
+          Write-Host "PASS: VST3 installed ->" (($vst3 | ForEach-Object { $_.Name }) -join ', ')
+          Get-ChildItem $vst3dir -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 8 | ForEach-Object { Write-Host "   " $_.FullName }
