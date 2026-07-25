@@ -49,3 +49,53 @@ jobs:
           name: ${{ matrix.repo }}-win
           path: out/**
           retention-days: 1
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup -y --no-progress
+      - name: Build unsigned installer
+        shell: bash
+        run: |
+          cd out
+          VST3=$(find . -maxdepth 1 -type d -name "*.vst3" | head -1 | sed 's|^\./||')
+          EXE=$(find . -maxdepth 1 -type f -name "*.exe" | head -1 | sed 's|^\./||')
+          PROD="${VST3%.vst3}"
+          [ -z "$PROD" ] && PROD="${EXE%.exe}"
+          [ -z "$PROD" ] && PROD="${{ matrix.repo }}"
+          echo "Product=$PROD  VST3=$VST3  EXE=$EXE"
+          {
+            printf '[Setup]\n'
+            printf 'AppName=%s\n' "$PROD"
+            printf 'AppVersion=1.0\n'
+            printf 'AppPublisher=New Hall of Fame Studios\n'
+            printf 'DefaultDirName={autopf}\\NHOF\\%s\n' "$PROD"
+            printf 'DisableProgramGroupPage=yes\n'
+            printf 'DisableDirPage=yes\n'
+            printf 'ArchitecturesAllowed=x64\n'
+            printf 'ArchitecturesInstallIn64BitMode=x64\n'
+            printf 'PrivilegesRequired=admin\n'
+            printf 'OutputDir=installer_out\n'
+            printf 'OutputBaseFilename=%s Installer\n' "$PROD"
+            printf 'Compression=lzma2\n'
+            printf 'SolidCompression=yes\n'
+            printf 'WizardStyle=modern\n\n'
+            printf '[Files]\n'
+            if [ -n "$VST3" ]; then printf 'Source: "%s\\*"; DestDir: "{commoncf}\\VST3\\%s"; Flags: recursesubdirs createallsubdirs ignoreversion\n' "$VST3" "$VST3"; fi
+            if [ -n "$EXE" ]; then printf 'Source: "%s"; DestDir: "{app}"; Flags: ignoreversion\n' "$EXE"; fi
+            if [ -n "$EXE" ]; then
+              printf '\n[Icons]\n'
+              printf 'Name: "{autoprograms}\\%s"; Filename: "{app}\\%s"\n' "$PROD" "$EXE"
+              printf 'Name: "{autodesktop}\\%s"; Filename: "{app}\\%s"; Tasks: desktopicon\n' "$PROD" "$EXE"
+              printf '\n[Tasks]\n'
+              printf 'Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked\n'
+              printf '\n[Run]\n'
+              printf 'Filename: "{app}\\%s"; Description: "Launch %s"; Flags: nowait postinstall skipifsilent\n' "$EXE" "$PROD"
+            fi
+          } > installer.iss
+          echo "=== installer.iss ==="; cat installer.iss
+          "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" installer.iss
+          echo "=== installer_out ==="; ls -la installer_out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.repo }}-win-installer
+          path: out/installer_out/**
+          retention-days: 3
