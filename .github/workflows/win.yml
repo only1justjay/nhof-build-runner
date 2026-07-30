@@ -56,6 +56,8 @@ jobs:
         shell: bash
         run: |
           cd out
+          curl -sL -o wizard.bmp https://raw.githubusercontent.com/only1justjay/nhof-build-runner/main/brand/wizard.bmp
+          curl -sL -o wizard-small.bmp https://raw.githubusercontent.com/only1justjay/nhof-build-runner/main/brand/wizard-small.bmp
           VST3=$(find . -maxdepth 1 -type d -name "*.vst3" | head -1 | sed 's|^\./||')
           EXE=$(find . -maxdepth 1 -type f -name "*.exe" | head -1 | sed 's|^\./||')
           PROD="${VST3%.vst3}"
@@ -78,6 +80,8 @@ jobs:
             printf 'Compression=lzma2\n'
             printf 'SolidCompression=yes\n'
             printf 'WizardStyle=modern\n\n'
+            printf 'WizardImageFile=wizard.bmp\n'
+            printf 'WizardSmallImageFile=wizard-small.bmp\n'
             printf '[Files]\n'
             if [ -n "$VST3" ]; then printf 'Source: "%s\\*"; DestDir: "{commoncf}\\VST3\\%s"; Flags: recursesubdirs createallsubdirs ignoreversion\n' "$VST3" "$VST3"; fi
             if [ -n "$EXE" ]; then printf 'Source: "%s"; DestDir: "{app}"; Flags: ignoreversion\n' "$EXE"; fi
