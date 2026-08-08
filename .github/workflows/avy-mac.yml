@@ -1,0 +1,149 @@
+name: avy-mac
+# AVY Systems — macOS app, built UNSIGNED here and signed + notarised afterwards on
+# Jay's Mac with his Developer ID and the `nhof` notarytool profile. Those credentials
+# deliberately never leave his machine, so they are not in CI secrets.
+#
+# Runs on the PUBLIC nhof-build-runner repo: standard runners, macOS included, are free
+# for public repos. Manual dispatch only — never on push.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch or tag of only1justjay/avy-systems to build"
+        required: false
+        default: "master"
+      version:
+        description: "Version being built (must match the app's own version)"
+        required: false
+        default: "1.0.1"
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - name: Checkout AVY source (private, via token)
+        uses: actions/checkout@v4
+        with:
+          repository: only1justjay/avy-systems
+          ref: ${{ inputs.ref || 'master' }}
+          token: ${{ secrets.NHOF_PAT }}
+          path: avy
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Set up Rust (both architectures)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin
+            avy/src-tauri/target
+          key: macos-cargo-${{ hashFiles('avy/src-tauri/Cargo.toml') }}
+          restore-keys: macos-cargo-
+
+      - name: Versions must agree
+        shell: bash
+        working-directory: avy
+        run: |
+          TC=$(python3 -c "import json;print(json.load(open('src-tauri/tauri.conf.json'))['version'])")
+          CG=$(grep -m1 '^version' src-tauri/Cargo.toml | cut -d'"' -f2)
+          WANT="${{ inputs.version || '1.0.1' }}"
+          echo "tauri.conf=$TC  Cargo.toml=$CG  requested=$WANT"
+          if [ "$TC" != "$CG" ] || [ "$TC" != "$WANT" ]; then
+            echo "::error::version mismatch - tag says $WANT but the app says $TC/$CG"; exit 1
+          fi
+          echo "versions agree: $TC"
+
+      - name: Build the desktop bundle
+        shell: bash
+        working-directory: avy
+        run: |
+          node build-desktop.mjs
+          test -f dist-desktop/index.html || { echo "::error::dist-desktop/index.html missing"; exit 1; }
+
+      - name: Sanity-check the bundle before packaging
+        shell: bash
+        working-directory: avy
+        run: |
+          set -e
+          H=dist-desktop/index.html
+          grep -q 'licGate'           "$H" || { echo "::error::licence gate missing"; exit 1; }
+          grep -q '__avyNeedsLicence' "$H" || { echo "::error::gate bootstrap missing"; exit 1; }
+          grep -q 'startApp'          "$H" || { echo "::error::startApp missing"; exit 1; }
+          grep -q 'jspdf'             "$H" || { echo "::error::pdf engine missing"; exit 1; }
+          if grep -qiE 'nhof studio|jay williams|only1just|ttgcrew|951-473|510-559' "$H"; then
+            echo "::error::personal data found in the shipped bundle"; exit 1
+          fi
+          echo "bundle checks passed"
+
+      - name: Install Tauri CLI
+        shell: bash
+        run: |
+          if command -v cargo-tauri >/dev/null 2>&1; then
+            echo "already present: $(cargo tauri --version)"
+          else
+            cargo install tauri-cli --version "^2" --locked
+          fi
+
+      - name: Build (universal — Intel and Apple Silicon)
+        shell: bash
+        working-directory: avy
+        run: |
+          # Stale bundles from the cache would otherwise be collected alongside the new one.
+          rm -rf src-tauri/target/universal-apple-darwin/release/bundle
+          cargo tauri build --target universal-apple-darwin --bundle none
+
+      - name: Collect the .app
+        shell: bash
+        working-directory: avy
+        run: |
+          rm -rf out && mkdir -p out
+          APP=$(find src-tauri/target/universal-apple-darwin/release/bundle -maxdepth 3 -name "*.app" -type d | head -1)
+          if [ -z "$APP" ]; then
+            APP=$(find src-tauri/target -name "AVY Systems.app" -type d | head -1)
+          fi
+          [ -n "$APP" ] || { echo "::error::no .app produced"; exit 1; }
+          cp -R "$APP" out/
+          echo "collected: $(ls out)"
+
+      - name: Verify the binary is real and universal
+        shell: bash
+        working-directory: avy
+        run: |
+          APP=$(find out -maxdepth 1 -name "*.app" | head -1)
+          BIN="$APP/Contents/MacOS/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")"
+          [ -f "$BIN" ] || { echo "::error::no executable inside the .app - this is the zero-byte failure"; exit 1; }
+          SIZE=$(stat -f%z "$BIN")
+          echo "executable: $BIN = $((SIZE/1024)) KB"
+          [ "$SIZE" -gt 102400 ] || { echo "::error::executable is only $((SIZE/1024)) KB - hollow"; exit 1; }
+          echo "--- architectures ---"
+          lipo -info "$BIN"
+          lipo -info "$BIN" | grep -q "x86_64" || { echo "::error::missing Intel slice"; exit 1; }
+          lipo -info "$BIN" | grep -q "arm64"  || { echo "::error::missing Apple Silicon slice"; exit 1; }
+          V=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")
+          echo "Info.plist version: $V"
+          [ "$V" = "${{ inputs.version || '1.0.1' }}" ] || { echo "::error::app reports $V, run is for ${{ inputs.version }}"; exit 1; }
+
+      - name: Zip for transport (ditto preserves the bundle)
+        shell: bash
+        working-directory: avy
+        run: |
+          cd out
+          ditto -c -k --keepParent "AVY Systems.app" "AVY-Systems-${{ inputs.version || '1.0.1' }}-unsigned.zip"
+          rm -rf "AVY Systems.app"
+          ls -la
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: avy-systems-macos-unsigned
+          path: avy/out/**
+          retention-days: 14
