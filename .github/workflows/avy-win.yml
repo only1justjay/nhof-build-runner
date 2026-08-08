@@ -54,6 +54,22 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('avy/src-tauri/Cargo.toml') }}
           restore-keys: ${{ runner.os }}-cargo-
 
+      - name: Versions must agree
+        shell: bash
+        working-directory: avy
+        run: |
+          TC=$(python -c "import json;print(json.load(open('src-tauri/tauri.conf.json'))['version'])")
+          CG=$(grep -m1 '^version' src-tauri/Cargo.toml | cut -d'"' -f2)
+          WANT="${{ inputs.version || '1.0.0' }}"
+          echo "tauri.conf=$TC  Cargo.toml=$CG  requested=$WANT"
+          # A release tag that disagrees with the binary is a lie, and Windows may not
+          # treat it as an upgrade over the previous install.
+          if [ "$TC" != "$CG" ] || [ "$TC" != "$WANT" ]; then
+            echo "::error::version mismatch - tag says $WANT but the app says $TC/$CG"
+            exit 1
+          fi
+          echo "versions agree: $TC"
+
       - name: Build the desktop bundle
         shell: bash
         working-directory: avy
