@@ -121,32 +121,72 @@ jobs:
       # A file that exists is not a working installer. The plugin .pkg that shipped
       # zero-byte apps to 200-300 people built cleanly too. The runner is Windows, so
       # install it here, confirm the app landed, and launch it.
+      # ---- the step that actually proves it works -------------------------------
+      # A file that exists is not a working installer. The plugin .pkg that shipped
+      # zero-byte apps to 200-300 people also exited 0. So: install it here, FIND where
+      # it really landed (never assume a path), confirm it is not a hollow shell, and
+      # launch it.
       - name: Install it, then launch it
         shell: pwsh
         working-directory: avy
         run: |
+          $ErrorActionPreference = "Stop"
           $setup = Get-ChildItem out -Filter *setup.exe | Select-Object -First 1
           if (-not $setup) { Write-Error "no setup.exe to test"; exit 1 }
+
           Write-Host "installing $($setup.Name) silently..."
           $p = Start-Process -FilePath $setup.FullName -ArgumentList "/S" -PassThru -Wait
           Write-Host "installer exit code: $($p.ExitCode)"
           if ($p.ExitCode -ne 0) { Write-Error "installer returned $($p.ExitCode)"; exit 1 }
+          Start-Sleep -Seconds 3
 
-          # Where NSIS currentUser mode puts it.
-          $roots = @("$env:LOCALAPPDATA\Programs\AVY Systems", "$env:ProgramFiles\AVY Systems")
+          # Ask Windows where it went rather than guessing. An installer that exits 0 and
+          # registers nothing has not installed anything.
+          $paths = @(
+            "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*",
+            "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*",
+            "HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*"
+          )
+          $entry = Get-ItemProperty $paths -ErrorAction SilentlyContinue |
+                   Where-Object { $_.DisplayName -like "*AVY*" } | Select-Object -First 1
+          if ($entry) {
+            Write-Host "registry: $($entry.DisplayName) $($entry.DisplayVersion) -> $($entry.InstallLocation)"
+          } else {
+            Write-Host "registry: no AVY uninstall entry"
+          }
+
+          $roots = @()
+          if ($entry -and $entry.InstallLocation) { $roots += $entry.InstallLocation }
+          $roots += @(
+            "$env:LOCALAPPDATA\Programs\AVY Systems",
+            "$env:LOCALAPPDATA\AVY Systems",
+            "$env:ProgramFiles\AVY Systems",
+            "${env:ProgramFiles(x86)}\AVY Systems",
+            "$env:APPDATA\Local\AVY Systems"
+          )
+
           $exe = $null
           foreach ($r in $roots) {
-            if (Test-Path $r) {
-              $exe = Get-ChildItem $r -Recurse -Filter "*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($r -and (Test-Path $r)) {
+              Write-Host "searching $r"
+              $exe = Get-ChildItem $r -Recurse -Filter "*.exe" -ErrorAction SilentlyContinue |
+                     Where-Object { $_.Name -notlike "uninstall*" } | Select-Object -First 1
               if ($exe) { break }
             }
           }
-          if (-not $exe) { Write-Error "installed, but no executable found in: $($roots -join ', ')"; exit 1 }
+
+          if (-not $exe) {
+            Write-Host "--- wide sweep for anything named AVY ---"
+            $hits = Get-ChildItem "$env:LOCALAPPDATA","$env:ProgramFiles","${env:ProgramFiles(x86)}","$env:APPDATA" `
+                      -Recurse -Depth 3 -Filter "*AVY*" -ErrorAction SilentlyContinue | Select-Object -First 25
+            if ($hits) { $hits | ForEach-Object { Write-Host "  $($_.FullName)" } } else { Write-Host "  nothing found anywhere" }
+            Write-Error "installer exited 0 but installed nothing findable - this is the zero-byte failure"
+            exit 1
+          }
 
           $kb = [math]::Round($exe.Length / 1KB)
           Write-Host "installed exe: $($exe.FullName) = $kb KB"
-          # The zero-byte-app check, made explicit.
-          if ($exe.Length -lt 100KB) { Write-Error "installed exe is only $kb KB - this is the zero-byte failure"; exit 1 }
+          if ($exe.Length -lt 100KB) { Write-Error "installed exe is only $kb KB - hollow shell"; exit 1 }
 
           Write-Host "launching..."
           $app = Start-Process -FilePath $exe.FullName -PassThru
@@ -155,7 +195,7 @@ jobs:
             Write-Error "app exited immediately with code $($app.ExitCode) - it does not run"
             exit 1
           }
-          Write-Host "PROVEN: installed and still running after 12s (pid $($app.Id))"
+          Write-Host "PROVEN: installed from the .exe and still running after 12s (pid $($app.Id))"
           Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue
 
       - uses: actions/upload-artifact@v4
