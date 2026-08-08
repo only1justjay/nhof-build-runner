@@ -41,6 +41,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
+            ~/.cargo/bin
             avy/src-tauri/target
           key: ${{ runner.os }}-cargo-${{ hashFiles('avy/src-tauri/Cargo.toml') }}
           restore-keys: ${{ runner.os }}-cargo-
@@ -72,7 +73,13 @@ jobs:
 
       - name: Install Tauri CLI
         shell: bash
-        run: cargo install tauri-cli --version "^2" --locked
+        # Cached in ~/.cargo/bin — compiling it from source costs ~10 minutes a run.
+        run: |
+          if command -v cargo-tauri >/dev/null 2>&1; then
+            echo "tauri-cli already present: $(cargo tauri --version)"
+          else
+            cargo install tauri-cli --version "^2" --locked
+          fi
 
       - name: Build the installer
         shell: bash
