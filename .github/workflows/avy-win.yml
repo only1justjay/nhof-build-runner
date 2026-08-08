@@ -1,0 +1,109 @@
+name: avy-win
+# AVY Systems — Windows desktop installer.
+#
+# Runs here, on the PUBLIC nhof-build-runner repo, because public repos get unlimited
+# free Actions minutes. The product source lives in a PRIVATE repo and is checked out
+# with NHOF_PAT, the same pattern the plugin builds use.
+#
+# workflow_dispatch only — never on push. Standing instruction: don't run up the repo
+# bill more than needed, and don't build on every commit.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch or tag of only1justjay/avy-systems to build"
+        required: false
+        default: "master"
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - name: Checkout AVY source (private, via token)
+        uses: actions/checkout@v4
+        with:
+          repository: only1justjay/avy-systems
+          ref: ${{ inputs.ref || 'master' }}
+          token: ${{ secrets.NHOF_PAT }}
+          path: avy
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            avy/src-tauri/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('avy/src-tauri/Cargo.toml') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Build the desktop bundle
+        shell: bash
+        working-directory: avy
+        run: |
+          node build-desktop.mjs
+          test -f dist-desktop/index.html || { echo "::error::dist-desktop/index.html missing"; exit 1; }
+          echo "bundle bytes: $(wc -c < dist-desktop/index.html)"
+
+      - name: Sanity-check the bundle before packaging
+        shell: bash
+        working-directory: avy
+        run: |
+          set -e
+          H=dist-desktop/index.html
+          # These are the things that silently break and still "build fine".
+          grep -q 'licGate'            "$H" || { echo "::error::licence gate missing"; exit 1; }
+          grep -q '__avyNeedsLicence'  "$H" || { echo "::error::gate bootstrap missing"; exit 1; }
+          grep -q 'startApp'           "$H" || { echo "::error::startApp missing"; exit 1; }
+          grep -q 'jspdf'              "$H" || { echo "::error::pdf engine reference missing"; exit 1; }
+          # No leaked personal data from the reference app, ever.
+          if grep -qiE 'nhof studio|jay williams|only1just|ttgcrew|951-473|510-559' "$H"; then
+            echo "::error::personal data found in the shipped bundle"; exit 1
+          fi
+          echo "bundle checks passed"
+
+      - name: Install Tauri CLI
+        shell: bash
+        run: cargo install tauri-cli --version "^2" --locked
+
+      - name: Build the installer
+        shell: bash
+        working-directory: avy
+        run: cargo tauri build --config src-tauri/tauri.conf.json
+
+      - name: Collect artefacts
+        shell: bash
+        working-directory: avy
+        run: |
+          mkdir -p out
+          find src-tauri/target/release/bundle -type f \( -iname "*.exe" -o -iname "*.msi" \) -exec cp {} out/ \;
+          ls -la out
+          test -n "$(ls -A out)" || { echo "::error::no installer produced"; exit 1; }
+
+      - name: Verify the installer is real
+        shell: pwsh
+        working-directory: avy
+        run: |
+          # An installer that exists but is a few KB is the zero-byte-app failure again.
+          Get-ChildItem out | ForEach-Object {
+            $kb = [math]::Round($_.Length / 1KB)
+            Write-Host "$($_.Name) = $kb KB"
+            if ($_.Length -lt 500KB) {
+              Write-Error "::error::$($_.Name) is only $kb KB - too small to be a real installer"
+              exit 1
+            }
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: avy-systems-windows
+          path: avy/out/**
+          retention-days: 14
