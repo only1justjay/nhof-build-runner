@@ -14,6 +14,14 @@ on:
         description: "Branch or tag of only1justjay/avy-systems to build"
         required: false
         default: "master"
+      publish:
+        description: "Publish the installer as a release (yes/no)"
+        required: false
+        default: "no"
+      version:
+        description: "Release version tag suffix"
+        required: false
+        default: "1.0.0"
 
 jobs:
   build:
@@ -109,8 +117,64 @@ jobs:
             }
           }
 
+      # ---- the step that actually proves it works -------------------------------
+      # A file that exists is not a working installer. The plugin .pkg that shipped
+      # zero-byte apps to 200-300 people built cleanly too. The runner is Windows, so
+      # install it here, confirm the app landed, and launch it.
+      - name: Install it, then launch it
+        shell: pwsh
+        working-directory: avy
+        run: |
+          $setup = Get-ChildItem out -Filter *setup.exe | Select-Object -First 1
+          if (-not $setup) { Write-Error "no setup.exe to test"; exit 1 }
+          Write-Host "installing $($setup.Name) silently..."
+          $p = Start-Process -FilePath $setup.FullName -ArgumentList "/S" -PassThru -Wait
+          Write-Host "installer exit code: $($p.ExitCode)"
+          if ($p.ExitCode -ne 0) { Write-Error "installer returned $($p.ExitCode)"; exit 1 }
+
+          # Where NSIS currentUser mode puts it.
+          $roots = @("$env:LOCALAPPDATA\Programs\AVY Systems", "$env:ProgramFiles\AVY Systems")
+          $exe = $null
+          foreach ($r in $roots) {
+            if (Test-Path $r) {
+              $exe = Get-ChildItem $r -Recurse -Filter "*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+              if ($exe) { break }
+            }
+          }
+          if (-not $exe) { Write-Error "installed, but no executable found in: $($roots -join ', ')"; exit 1 }
+
+          $kb = [math]::Round($exe.Length / 1KB)
+          Write-Host "installed exe: $($exe.FullName) = $kb KB"
+          # The zero-byte-app check, made explicit.
+          if ($exe.Length -lt 100KB) { Write-Error "installed exe is only $kb KB - this is the zero-byte failure"; exit 1 }
+
+          Write-Host "launching..."
+          $app = Start-Process -FilePath $exe.FullName -PassThru
+          Start-Sleep -Seconds 12
+          if ($app.HasExited) {
+            Write-Error "app exited immediately with code $($app.ExitCode) - it does not run"
+            exit 1
+          }
+          Write-Host "PROVEN: installed and still running after 12s (pid $($app.Id))"
+          Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue
+
       - uses: actions/upload-artifact@v4
         with:
           name: avy-systems-windows
           path: avy/out/**
           retention-days: 14
+
+      - name: Publish for testing
+        if: inputs.publish == 'yes'
+        shell: bash
+        working-directory: avy
+        env:
+          GH_TOKEN: ${{ secrets.NHOF_PAT }}
+        run: |
+          TAG="avy-v${{ inputs.version || '1.0.0' }}"
+          gh release view "$TAG" --repo only1justjay/nhof-build-runner >/dev/null 2>&1 \
+            || gh release create "$TAG" --repo only1justjay/nhof-build-runner \
+                 --title "AVY Systems $TAG (Windows)" \
+                 --notes "Windows installer for AVY Systems Invoice & Bookings. Installed and launched on a Windows runner before publishing."
+          gh release upload "$TAG" out/*.exe --repo only1justjay/nhof-build-runner --clobber
+          echo "published: https://github.com/only1justjay/nhof-build-runner/releases/tag/$TAG"
