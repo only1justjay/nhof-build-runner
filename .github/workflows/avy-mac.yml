@@ -100,7 +100,7 @@ jobs:
         run: |
           # Stale bundles from the cache would otherwise be collected alongside the new one.
           rm -rf src-tauri/target/universal-apple-darwin/release/bundle
-          cargo tauri build --target universal-apple-darwin --bundle none
+          cargo tauri build --target universal-apple-darwin --bundles app
 
       - name: Collect the .app
         shell: bash
