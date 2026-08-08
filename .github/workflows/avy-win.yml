@@ -108,16 +108,27 @@ jobs:
       - name: Build the installer
         shell: bash
         working-directory: avy
-        run: cargo tauri build --config src-tauri/tauri.conf.json
+        run: |
+          # The cargo cache restores previous runs' bundles. Left in place they get
+          # collected alongside the new one and the wrong binary gets tested.
+          rm -rf src-tauri/target/release/bundle
+          cargo tauri build --config src-tauri/tauri.conf.json
 
       - name: Collect artefacts
         shell: bash
         working-directory: avy
         run: |
-          mkdir -p out
-          find src-tauri/target/release/bundle -type f \( -iname "*.exe" -o -iname "*.msi" \) -exec cp {} out/ \;
+          V="${{ inputs.version || '1.0.0' }}"
+          rm -rf out && mkdir -p out
+          find src-tauri/target/release/bundle -type f -iname "*${V}*setup.exe" -exec cp {} out/ \;
           ls -la out
-          test -n "$(ls -A out)" || { echo "::error::no installer produced"; exit 1; }
+          N=$(ls -1 out/*setup.exe 2>/dev/null | wc -l | tr -d ' ')
+          if [ "$N" != "1" ]; then
+            echo "::error::expected exactly 1 installer for version $V, found $N"
+            ls -la src-tauri/target/release/bundle/nsis 2>/dev/null || true
+            exit 1
+          fi
+          echo "collected: $(ls out)"
 
       - name: Verify the installer is real
         shell: pwsh
@@ -147,8 +158,15 @@ jobs:
         working-directory: avy
         run: |
           $ErrorActionPreference = "Stop"
-          $setup = Get-ChildItem out -Filter *setup.exe | Select-Object -First 1
-          if (-not $setup) { Write-Error "no setup.exe to test"; exit 1 }
+          $want = "${{ inputs.version || '1.0.0' }}"
+          $all  = @(Get-ChildItem out -Filter *setup.exe)
+          if ($all.Count -ne 1) { Write-Error "expected 1 installer, found $($all.Count)"; exit 1 }
+          $setup = $all[0]
+          if ($setup.Name -notlike "*$want*") {
+            Write-Error "about to test $($setup.Name) but this run is for $want"
+            exit 1
+          }
+          Write-Host "testing the $want installer: $($setup.Name)"
 
           Write-Host "installing $($setup.Name) silently..."
           $p = Start-Process -FilePath $setup.FullName -ArgumentList "/S" -PassThru -Wait
@@ -167,6 +185,12 @@ jobs:
                    Where-Object { $_.DisplayName -like "*AVY*" } | Select-Object -First 1
           if ($entry) {
             Write-Host "registry: $($entry.DisplayName) $($entry.DisplayVersion) -> $($entry.InstallLocation)"
+            # The installed version must match what we set out to build, or the release
+            # tag is describing something other than what is inside it.
+            if ($entry.DisplayVersion -and $entry.DisplayVersion -ne $want) {
+              Write-Error "installed version is $($entry.DisplayVersion) but this run built $want"
+              exit 1
+            }
           } else {
             Write-Host "registry: no AVY uninstall entry"
           }
