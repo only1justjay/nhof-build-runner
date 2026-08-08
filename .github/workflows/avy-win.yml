@@ -112,7 +112,7 @@ jobs:
           # The cargo cache restores previous runs' bundles. Left in place they get
           # collected alongside the new one and the wrong binary gets tested.
           rm -rf src-tauri/target/release/bundle
-          cargo tauri build --config src-tauri/tauri.conf.json
+          cargo tauri build --config src-tauri/tauri.conf.json --bundles nsis
 
       - name: Collect artefacts
         shell: bash
